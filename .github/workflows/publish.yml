@@ -1,0 +1,35 @@
+# publish.yml — 推送 v* 标签时构建并发布到 PyPI
+# 需要在仓库 Settings → Secrets 配置 PYPI_TOKEN（与 asyrq 相同的 PyPI API Token）
+
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Build & Upload to PyPI
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Build
+        run: uv build
+
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish

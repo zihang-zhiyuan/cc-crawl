@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cc-crawl"
+version = "0.1.0"
+description = "cc-crawl：轻量异步爬虫框架（curl_cffi 下载器，API 参考 Scrapy / feapder）"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [{ name = "cc-crawl contributors" }]
+keywords = ["crawler", "scraper", "asyncio", "curl_cffi", "scrapy", "cc-crawl"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "curl_cffi>=0.7.0",
+    "loguru>=0.7.0",
+]
+
+[project.optional-dependencies]
+parse = ["parsel>=1.9.0"]
+mongo = ["pymongo>=4.9"]
+postgres = ["asyncpg>=0.29"]
+mysql = ["aiomysql>=0.2"]
+db = ["pymongo>=4.9", "asyncpg>=0.29", "aiomysql>=0.2"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "parsel>=1.9.0",
+    "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/zihang-zhiyuan/cc-crawl"
+Repository = "https://github.com/zihang-zhiyuan/cc-crawl.git"
+
+[project.scripts]
+cc-crawl = "cc_crawl.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cc_crawl*"]
+
+[tool.setuptools.package-data]
+cc_crawl = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+
+[[tool.uv.index]]
+name = "tuna"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
