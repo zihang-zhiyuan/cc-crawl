@@ -31,19 +31,25 @@ jobs:
 
       - name: Check PyPI token
         env:
-          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+          RAW_TOKEN: ${{ secrets.PYPI_TOKEN }}
         run: |
-          if [ -z "$PYPI_TOKEN" ]; then
+          TOKEN="$(printf '%s' "$RAW_TOKEN" | tr -d '[:space:]')"
+          if [ -z "$TOKEN" ]; then
             echo "::error::PYPI_TOKEN secret is not set in this repository"
             exit 1
           fi
-          echo "PYPI_TOKEN length: ${#PYPI_TOKEN}"
-          case "$PYPI_TOKEN" in
+          echo "token length: ${#TOKEN}"
+          case "$TOKEN" in
             pypi-*) echo "token prefix ok" ;;
-            *) echo "::warning::PYPI_TOKEN does not start with pypi-" ;;
+            *)
+              echo "::error::PYPI_TOKEN does not look like a PyPI API token (must start with pypi-)"
+              exit 1
+              ;;
           esac
 
       - name: Publish to PyPI
         env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: uv publish --verbose
+          RAW_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          TOKEN="$(printf '%s' "$RAW_TOKEN" | tr -d '[:space:]')"
+          UV_PUBLISH_TOKEN="$TOKEN" uv publish --verbose
