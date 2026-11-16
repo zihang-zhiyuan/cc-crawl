@@ -34,7 +34,7 @@ from .settings import Settings, configure, global_settings, load_settings
 from .spider import Spider
 from .stats import StatsCollector
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # 兼容旧的统计对象名字
 Stats = StatsCollector

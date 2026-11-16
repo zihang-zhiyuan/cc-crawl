@@ -75,7 +75,12 @@ class Request:
         return hashlib.sha1("\x00".join(parts).encode("utf-8")).hexdigest()
 
     def replace(self, **kwargs: Any) -> "Request":
-        """基于当前请求生成一个新请求（不修改原对象）。"""
+        """基于当前请求生成一个新请求（不修改原对象）。
+
+        ``meta`` 默认做浅拷贝：``Response.follow()`` 会批量派生子请求，
+        共用同一个 dict 会让中间件写的请求级状态互相覆盖。
+        """
+        kwargs.setdefault("meta", dict(self.meta or {}))
         return replace(self, **kwargs)
 
     def __repr__(self) -> str:
