@@ -29,7 +29,21 @@ jobs:
       - name: Build
         run: uv build
 
+      - name: Check PyPI token
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          if [ -z "$PYPI_TOKEN" ]; then
+            echo "::error::PYPI_TOKEN secret is not set in this repository"
+            exit 1
+          fi
+          echo "PYPI_TOKEN length: ${#PYPI_TOKEN}"
+          case "$PYPI_TOKEN" in
+            pypi-*) echo "token prefix ok" ;;
+            *) echo "::warning::PYPI_TOKEN does not start with pypi-" ;;
+          esac
+
       - name: Publish to PyPI
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: uv publish
+        run: uv publish --verbose
