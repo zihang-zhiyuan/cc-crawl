@@ -165,7 +165,8 @@ def test_mongo_pipeline_inserts_and_closes():
     asyncio.run(run())
 
     assert client.databases["db"].collections["items"].docs == [{"a": 1}]
-    assert client.closed is True
+    # 外部注入的 client 由调用方管理，任务结束不关闭
+    assert client.closed is False
 
 
 class AsyncContext:
@@ -203,9 +204,9 @@ class FakePgPool:
 def test_postgres_pipeline_creates_table_and_inserts():
     spider = NamedSpider()
     pool = FakePgPool()
+    pipeline = PostgresPipeline(table="items", pool=pool)
 
     async def run():
-        pipeline = PostgresPipeline(table="items", pool=pool)
         await pipeline.open_spider(spider)
         await pipeline.process_item(Item(name="x"), spider)
         await pipeline.close_spider(spider)
@@ -217,7 +218,18 @@ def test_postgres_pipeline_creates_table_and_inserts():
     assert "CREATE TABLE IF NOT EXISTS items" in create_sql
     assert "INSERT INTO items" in insert_sql
     assert args == ("pipeline-test", '{"name": "x"}')
-    assert pool.closed is True
+    # 外部注入的 pool 由调用方管理，任务结束不关闭
+    assert pool.closed is False
+
+    async def reopen():
+        await pipeline.open_spider(spider)
+        await pipeline.process_item(Item(name="y"), spider)
+        await pipeline.close_spider(spider)
+
+    asyncio.run(reopen())
+    # 同一个 pool 复用时不再重复建表
+    assert sum("CREATE TABLE" in call[0] for call in pool.connection.calls) == 1
+    assert pool.closed is False
 
 
 class FakeCursor:
@@ -274,4 +286,5 @@ def test_mysql_pipeline_creates_table_and_inserts():
     assert "CREATE TABLE IF NOT EXISTS `items`" in create_sql
     assert "INSERT INTO `items`" in insert_sql
     assert args == ("pipeline-test", '{"name": "x"}')
-    assert pool.closed is True
+    # 外部注入的 pool 由调用方管理，任务结束不关闭
+    assert pool.closed is False

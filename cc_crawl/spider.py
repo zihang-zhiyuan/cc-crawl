@@ -82,5 +82,44 @@ class Spider:
             f"{type(self).__name__} 需要实现 parse(request, response) 或 parse(response) 方法"
         )
 
+    async def validate(self, response: Response) -> Any:
+        """校验响应是否有效，在解析回调之前调用。参数只有 ``response``。
+
+        - 返回 ``True`` / ``None``：进入解析；
+        - 返回 ``False``：丢弃该请求，不进入解析，调用 :meth:`failed_request`；
+        - 抛出异常：按可重试失败处理（最多 ``retry_times`` 次）。
+
+        典型用法是拦反爬页 / 登录失效页::
+
+            async def validate(self, response):
+                if "请登录" in response.text:
+                    return False
+                if response.status_code == 403:
+                    raise RuntimeError("被封禁")
+        """
+        return True
+
+    async def failed_request(
+        self,
+        response: Response | None,
+        exception: BaseException | None = None,
+    ) -> Request | None:
+        """请求最终失败时调用。参数是 ``response``（下载失败时为 None）和异常。
+
+        触发时机：``validate`` 返回 False、下载重试耗尽、解析回调异常且重试耗尽。
+
+        返回一个 ``Request`` 表示改投别的请求（会重新入队）；返回 ``None``
+        表示放弃该请求（计入 ``failed_requests`` 统计）。下载失败时可以从
+        ``exception.url``（``DownloadError``）拿到请求地址。
+        """
+        return None
+
+    async def end_callback(self) -> None:
+        """整轮爬取结束（队列清空、worker 全部停止）后调用一次。
+
+        适合做最终上报、汇总落库、资源释放等；在 :meth:`closed` 之前调用。
+        同步、异步写法都支持。
+        """
+
     async def closed(self) -> None:
         """爬虫结束后的收尾钩子，可重写。"""

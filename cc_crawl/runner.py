@@ -67,6 +67,15 @@ async def run_task_async(
 
     elapsed = round(time.perf_counter() - started, 3)
     stats = engine.stats.to_dict() if engine is not None else _empty_stats()
+    if error is None and stats.get("requests", 0) > 0 and stats.get("success", 0) == 0:
+        # 一个请求都没成功：视为任务失败（部分失败仍算成功，看 stats 细节）
+        failed_total = (
+            stats.get("failure", 0)
+            + stats.get("validation_failed", 0)
+            + stats.get("parse_errors", 0)
+        )
+        if failed_total > 0:
+            error = "全部请求失败"
     result = {
         "task_id": payload.get("task_id"),
         "spider": name,

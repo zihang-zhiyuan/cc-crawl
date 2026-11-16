@@ -50,6 +50,7 @@ class MongoPipeline(ItemPipeline):
         self.collection = collection
         self.client_kwargs = client_kwargs or {}
         self._client = client
+        self._owns_client = client is None
         self._collection: Any = None
 
     async def open_spider(self, spider: Any) -> None:
@@ -62,7 +63,8 @@ class MongoPipeline(ItemPipeline):
         return item
 
     async def close_spider(self, spider: Any) -> None:
-        if self._client is None:
+        # 外部传入的 client 由调用方负责关闭（进程级共享时不随任务结束而断开）
+        if self._client is None or not self._owns_client:
             return
         result = self._client.close()
         if inspect.isawaitable(result):

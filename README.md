@@ -305,6 +305,10 @@ yield Request("https://example.com/list", session="1001", callback=self.parse)
 | `items` | 通过管道后保留的 Item 数 |
 | `items_dropped` | 被管道丢弃或管道异常导致丢弃的 Item 数 |
 | `pipeline_errors` | 管道 `process_item` 抛异常的次数 |
+| `validation_failed` | `validate` 返回 `False` 被丢弃的请求数 |
+| `failed_requests` | `failed_request` 最终放弃的请求数（返回新 Request 的不算） |
+| `parse_errors` | 解析回调抛异常的次数（含重试后成功的） |
+| `spider_retries` | 解析 / 校验失败触发的请求级重试次数 |
 | `avg_latency_seconds` | 最终响应的平均下载耗时（不含排队、中间件和回调时间） |
 | `max_latency_seconds` | 单次响应最长下载耗时 |
 | `responses_per_minute` | 响应速率（按运行时长折算） |
@@ -370,6 +374,50 @@ class DemoSpider(Spider):
 
 同步、异步写法都支持，会在每个请求进入下载中间件链之前调用。
 
+### 响应校验与失败钩子（feapder 风格）
+
+```python
+class DemoSpider(Spider):
+    name = "demo"
+
+    async def start_requests(self):
+        yield Request("https://example.com/list", callback=self.parse)
+
+    def validate(self, response):
+        """解析前校验响应；True/None 继续，False 丢弃，抛异常按失败重试。"""
+        if "请登录" in response.text:
+            return False
+        if response.status_code == 403:
+            raise RuntimeError("被封禁")
+        return True
+
+    async def parse(self, response):
+        yield Item(...)
+
+    async def failed_request(self, response, exception):
+        """请求最终失败时调用；返回 Request 表示改投，返回 None 表示放弃。"""
+        self.logger.warning("失败：{} {}", getattr(response, "url", None), exception)
+        return None
+
+    async def end_callback(self):
+        """整轮爬取结束（队列清空后）调用一次，适合最终上报。"""
+        ...
+```
+
+行为约定：
+
+- `validate(response)`：在解析回调之前执行，参数和解析回调一样只有 `response`。返回
+  `True` / `None` 进入解析；返回 `False` 丢弃该请求并调用 `failed_request`；
+  抛异常按可重试失败处理（最多 `retry_times` 次）。
+- `failed_request(response, exception)`：在 `validate` 返回 `False`、下载重试耗尽、
+  解析回调异常且重试耗尽时调用。返回 `Request` 会重新入队（可用于换 URL / 换代理）；
+  返回 `None` 则放弃，计入 `failed_requests`。
+- 解析回调异常和 `validate` 异常会自动重试（次数受 `retry_times` 限制，记录在
+  `request.meta["_cc_attempt"]`）；下载失败由下载器自己重试，不会重复。
+- 回调重试时，回调在抛异常前已经 yield 的 Item 不会回滚，业务侧按需幂等。
+- `end_callback()`：队列清空、worker 停止后调用一次，在 `closed()` 之前；同步/异步都支持。
+- 一个请求都没成功（`success == 0` 且有失败）时，`run_task_async` 的 `status` 为 `failed`。
+
 ## Item Pipeline
 
 处理抓到的 Item：清洗、校验、去重、落库。继承 `ItemPipeline`，按 `item_pipelines` 顺序执行；任一管道返回 `None` 就丢弃该 Item。
@@ -416,6 +464,17 @@ uv sync --extra mongo      # 或 postgres / mysql / db（三个都装）
 ```
 
 数据库管道首次启动会自动建表：`id / spider / item(JSON/JSONB) / created_at`，表名可用 `table=` 指定。Mongo 直接写入 `{...item}` 文档。
+
+每个任务都会新建并 `open_spider` / `close_spider` 一次管道。如果想让多个任务共用一个连接池（一账号一进程 + 子任务场景很常见），把 pool / client 注入进去即可，注入的句柄由调用方负责关闭，任务结束不会断开：
+
+```python
+import asyncpg
+from cc_crawl.pipelines import PostgresPipeline
+
+pool = await asyncpg.create_pool(dsn)          # 进程启动时建一次
+pipeline = PostgresPipeline(pool=pool, table="cc_crawl_items")
+# 同一实例放进 item_pipelines，后续任务复用；建表只在第一次执行
+```
 
 Item 经过管道后才会进入 `engine.items` 并计入 `item_scraped_count`；被丢弃或管道异常会记入 `items_dropped` / `pipeline_errors`，管道异常不会中断爬取。管道在下载 worker 内按 Item 顺序执行，数据库管道使用异步驱动，不会阻塞事件循环。
 

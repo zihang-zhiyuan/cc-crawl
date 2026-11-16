@@ -43,6 +43,8 @@ class PostgresPipeline(ItemPipeline):
         self.min_size = min_size
         self.max_size = max_size
         self._pool = pool
+        self._owns_pool = pool is None
+        self._prepared = False
 
     async def open_spider(self, spider: Any) -> None:
         if self._pool is None:
@@ -55,8 +57,11 @@ class PostgresPipeline(ItemPipeline):
             self._pool = await asyncpg.create_pool(
                 dsn=self.dsn, min_size=self.min_size, max_size=self.max_size
             )
+        if self._prepared:
+            return
         async with self._pool.acquire() as connection:
             await connection.execute(self._create_sql())
+        self._prepared = True
 
     async def process_item(self, item: Item, spider: Any) -> Item:
         async with self._pool.acquire() as connection:
@@ -66,12 +71,14 @@ class PostgresPipeline(ItemPipeline):
         return item
 
     async def close_spider(self, spider: Any) -> None:
-        if self._pool is None:
+        # 外部传入的 pool 由调用方负责关闭（进程级共享时不随任务结束而断开）
+        if self._pool is None or not self._owns_pool:
             return
         result = self._pool.close()
         if inspect.isawaitable(result):
             await result
         self._pool = None
+        self._prepared = False
 
     def _create_sql(self) -> str:
         return (
@@ -116,6 +123,8 @@ class MysqlPipeline(ItemPipeline):
         self.max_size = max_size
         self.charset = charset
         self._pool = pool
+        self._owns_pool = pool is None
+        self._prepared = False
 
     async def open_spider(self, spider: Any) -> None:
         if self._pool is None:
@@ -136,9 +145,12 @@ class MysqlPipeline(ItemPipeline):
                 minsize=self.min_size,
                 maxsize=self.max_size,
             )
+        if self._prepared:
+            return
         async with self._pool.acquire() as connection:
             async with connection.cursor() as cursor:
                 await cursor.execute(self._create_sql())
+        self._prepared = True
 
     async def process_item(self, item: Item, spider: Any) -> Item:
         async with self._pool.acquire() as connection:
@@ -149,7 +161,7 @@ class MysqlPipeline(ItemPipeline):
         return item
 
     async def close_spider(self, spider: Any) -> None:
-        if self._pool is None:
+        if self._pool is None or not self._owns_pool:
             return
         self._pool.close()
         wait_closed = getattr(self._pool, "wait_closed", None)
@@ -158,6 +170,7 @@ class MysqlPipeline(ItemPipeline):
             if inspect.isawaitable(result):
                 await result
         self._pool = None
+        self._prepared = False
 
     def _create_sql(self) -> str:
         return (

@@ -17,3 +17,12 @@ class DownloadError(CrawlxError):
 
 class SpiderNotFound(CrawlxError):
     """无法定位到指定的 Spider 类。"""
+
+
+class ValidationFailed(CrawlxError):
+    """``Spider.validate`` 返回 False（响应无效，丢弃该请求）。"""
+
+    def __init__(self, url: str, message: str = "validate 返回 False") -> None:
+        self.url = url
+        self.message = message
+        super().__init__(f"响应校验失败 {url}: {message}")

@@ -12,7 +12,7 @@ from typing import Any, AsyncIterator, Mapping
 from loguru import logger
 
 from .downloader import Downloader
-from .exceptions import DownloadError
+from .exceptions import DownloadError, ValidationFailed
 from .item import Item
 from .log import setup_logging
 from .middlewares import DownloaderMiddlewareManager, load_middlewares
@@ -63,6 +63,9 @@ class Engine:
         self._seen: set[str] = set()
         self._seen_order: deque[str] = deque()
 
+    # 解析 / 校验失败重试次数记录在请求 meta 上
+    ATTEMPT_KEY = "_cc_attempt"
+
     async def crawl(self) -> list[Item]:
         """执行爬取，返回收集到的全部 Item。"""
         setup_logging(self.settings.log_level, self.settings.log_file)
@@ -97,6 +100,10 @@ class Engine:
                 ):
                     logger.error("worker 异常退出: {!r}", result)
             self._workers.clear()
+            try:
+                await _maybe_await(self.spider.end_callback())
+            except Exception:  # noqa: BLE001 - 收尾钩子失败不应掩盖主流程结果
+                logger.exception("spider.end_callback() 执行失败")
             try:
                 await _maybe_await(self.spider.closed())
             except Exception:  # noqa: BLE001 - 收尾钩子失败不应掩盖主流程结果
@@ -187,6 +194,25 @@ class Engine:
             response = await self._download(request)
         except DownloadError as exc:
             logger.error("{}", exc)
+            await self._failed(request, None, exc)
+            return
+
+        try:
+            verdict = await _maybe_await(self._call_hook(self.spider.validate, request, response))
+        except Exception as exc:  # noqa: BLE001 - 校验异常按可重试失败处理
+            self.stats.inc_value("spider/validate_error_count")
+            logger.warning("validate 执行失败 {}: {!r}", request.url, exc)
+            if not self._retry(request):
+                await self._failed(request, response, exc)
+            return
+
+        if verdict is False:
+            self.stats.inc_value("spider/validation_failed")
+            await self._failed(
+                request,
+                response,
+                ValidationFailed(request.url),
+            )
             return
 
         self._record_response(response)
@@ -194,13 +220,74 @@ class Engine:
             logger.warning("HTTP {} {}", response.status_code, response.url)
 
         callback = request.callback or self.spider.parse
-        async for result in _iter_callback(callback, request, response):
-            if isinstance(result, Request):
-                self._enqueue(result)
-            elif isinstance(result, Item):
-                await self._process_item(result)
-            else:
-                logger.warning("忽略回调返回的未知类型: {!r}", type(result))
+        try:
+            async for result in _iter_callback(callback, request, response):
+                if isinstance(result, Request):
+                    self._enqueue(result)
+                elif isinstance(result, Item):
+                    await self._process_item(result)
+                else:
+                    logger.warning("忽略回调返回的未知类型: {!r}", type(result))
+        except Exception as exc:  # noqa: BLE001 - 解析异常按可重试失败处理
+            self.stats.inc_value("spider/parse_error_count")
+            logger.exception("解析失败 {}", request.url)
+            if not self._retry(request):
+                await self._failed(request, response, exc)
+
+    def _call_hook(self, callback: Any, request: Request, response: Response) -> Any:
+        """validate 只按参数个数传参：``validate(response)`` 或 ``validate(request, response)``。"""
+        if _positional_params(callback) >= 2:
+            return callback(request, response)
+        return callback(response)
+
+    def _call_failed_hook(
+        self,
+        request: Request,
+        response: Response | None,
+        exception: BaseException,
+    ) -> Any:
+        """failed_request 支持 (response, exception) / (response) / 旧版三参数。"""
+        callback = self.spider.failed_request
+        count = _positional_params(callback)
+        if count >= 3:
+            return callback(request, response, exception)
+        if count == 2:
+            return callback(response, exception)
+        if count == 1:
+            return callback(response)
+        return callback()
+
+    def _retry(self, request: Request) -> bool:
+        """解析 / 校验类失败重试（下载失败由下载器自己重试，不重复）。"""
+        attempt = int(request.meta.get(self.ATTEMPT_KEY, 0))
+        if attempt >= self.settings.retry_times:
+            return False
+        self.stats.inc_value("spider/retry_count")
+        retried = request.replace(
+            meta={**request.meta, self.ATTEMPT_KEY: attempt + 1},
+            dont_filter=True,
+        )
+        self._enqueue(retried)
+        return True
+
+    async def _failed(
+        self,
+        request: Request,
+        response: Response | None,
+        exception: BaseException,
+    ) -> None:
+        """请求最终失败：交给 ``failed_request``，返回 Request 则改投。"""
+        try:
+            replacement = await _maybe_await(
+                self._call_failed_hook(request, response, exception)
+            )
+        except Exception:  # noqa: BLE001 - 失败钩子异常不能拖垮 worker
+            logger.exception("failed_request 执行失败 {}", request.url)
+            replacement = None
+        if isinstance(replacement, Request):
+            self._enqueue(replacement)
+            return
+        self.stats.inc_value("spider/failed_requests")
 
     async def _process_item(self, item: Item) -> None:
         try:
@@ -383,3 +470,21 @@ def run_spider(
     """
     spider = spider_cls(*spider_args, **spider_kwargs)
     return asyncio.run(crawl(spider, overrides=settings))
+
+
+def _positional_params(callback: Any) -> int:
+    """统计回调接受的位置参数个数（绑定方法不算 self；*args 视为很多）。"""
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        return 2
+    count = 0
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            return 99
+        if parameter.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            count += 1
+    return count
