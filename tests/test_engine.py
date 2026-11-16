@@ -197,7 +197,7 @@ class JsonPostSpider(Spider):
 def test_engine_supports_post_json(base_url):
     items = asyncio.run(Engine(JsonPostSpider(f"{base_url}/json")).crawl())
 
-    assert items[0]["data"]["body"] == '{"hello": "world"}'
+    assert json.loads(items[0]["data"]["body"]) == {"hello": "world"}
     assert items[0]["data"]["ctype"] == "application/json"
 
 
